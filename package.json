@@ -1,0 +1,28 @@
+{
+  "name": "dsh-session-delete",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Delete a DSH session completely - log, lock, projection cache and workspace entry - and refuse the cases that would take the running Host down with it.",
+  "license": "MIT",
+  "main": "index.js",
+  "exports": {
+    ".": "./index.js",
+    "./package.json": "./package.json",
+    "./cordis.patch.yml": "./cordis.patch.yml"
+  },
+  "files": [
+    "index.js",
+    "cordis.patch.yml",
+    "README.md"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "meta": {
+      "title": "Session Delete",
+      "description": "Fully delete DSH sessions (log, lock, projection cache, workspace row) from the composer or an agent tool, with guards against deleting the session you are running in."
+    }
+  }
+}

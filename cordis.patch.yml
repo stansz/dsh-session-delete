@@ -1,0 +1,13 @@
+# Bundle patch for dsh-session-delete.
+#
+# One inserted row. It mounts this package's Host half, which registers one tool
+# and two commands into existing services:
+#
+#   ctx.tools.register()    -> the `session_admin` tool (action: list | inspect | delete)
+#   ctx.commands.register() -> /session-list and /session-delete
+#
+# The row id is unique to this bundle, so nothing shipped is overridden and no base
+# row's config has to be restated. Delete this entry to remove every contribution.
+- insert:
+    - id: session-delete
+      name: 'dsh-session-delete'
