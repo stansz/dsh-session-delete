@@ -42,7 +42,7 @@
  * the session id, so a change to the encoding cannot delete the wrong thing.
  */
 
-import { existsSync, lstatSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, lstatSync, readdirSync, readFileSync, rmSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { isAbsolute, join, resolve, sep } from 'node:path';
 
@@ -406,110 +406,60 @@ async function forgetInWorkspaceRegistry(ctx, sessionId) {
   const registry = ctx.get('workspaceRegistry');
 
   if (registry === undefined) {
-    report.error = 'workspaceRegistry is unavailable';
-  } else {
-    // The registry-global sets: archived and pinned. An id can be in either without any
-    // workspace accounting it, so both are checked independently of the workspace rows.
-    const global = registry.global ?? registry.table_store;
-    try {
-      const state = global?.get?.();
-      if (state !== undefined) {
-        const next = {};
-        if (Array.isArray(state.archivedSessionIds) && state.archivedSessionIds.includes(sessionId)) {
-          next.archivedSessionIds = state.archivedSessionIds.filter((id) => id !== sessionId);
-          report.unarchived = true;
-        }
-        if (Array.isArray(state.pinnedSessionIds) && state.pinnedSessionIds.includes(sessionId)) {
-          next.pinnedSessionIds = state.pinnedSessionIds.filter((id) => id !== sessionId);
-        }
-        if (Object.keys(next).length > 0) {
-          await global.set({ ...state, ...next });
-          report.viaService = true;
-        }
-      }
-    } catch (error) {
-      report.error = `workspace global sets: ${error?.message ?? String(error)}`;
-    }
-
-    // The accounting row: drop the id from whichever workspace lists it.
-    const table = registry.table ?? ctx.get('storageDomain')?.get?.('workspace')?.table?.('workspaces');
-    if (table === undefined || typeof table.update !== 'function') {
-      if (report.error === undefined) report.error = 'the workspace domain table is unreachable';
-    } else {
-      try {
-        const ids = typeof table.keys === 'function' ? [...table.keys()] : [];
-        for (const workspaceId of ids) {
-          const record = table.get(workspaceId);
-          if (!record || !Array.isArray(record.sessionIds) || !record.sessionIds.includes(sessionId)) continue;
-          await table.update(workspaceId, (current) => ({
-            ...current,
-            sessionIds: current.sessionIds.filter((id) => id !== sessionId),
-            updatedAt: new Date().toISOString(),
-          }));
-          report.removedFrom.push(workspaceId);
-          report.viaService = true;
-        }
-      } catch (error) {
-        report.error = `workspace accounting row: ${error?.message ?? String(error)}`;
-      }
-    }
+    report.error = 'workspaceRegistry is unavailable; the stored row was left in place';
+    return report;
   }
 
-  // FALLBACK FOR A DIFFERENT DSH VERSION. The service path relies on registry internals
-  // (`registry.table`, `registry.global`) that another build may not expose, and on a box
-  // with no registry service at all there is nothing to call. In either case the row is
-  // still removed from the store file, so the session leaves the list on the next
-  // refresh/restart instead of surviving forever. This emits no change event, which is
-  // the whole reason the service path is preferred.
-  if (report.removedFrom.length === 0) {
-    const viaFile = forgetInStoreFile(sessionId);
-    if (viaFile.changed) {
-      report.viaFile = true;
-      report.removedFrom = viaFile.removedFrom;
-      report.unarchived = report.unarchived || viaFile.unarchived;
-      report.error = undefined; // the row is gone from the store; the service path was the only thing missing
-    } else if (report.error !== undefined) {
-      report.error = `${report.error}; the store file held no row for it either`;
+  // The registry-global sets: archived and pinned. An id can be in either without any
+  // workspace accounting it, so both are checked independently of the workspace rows.
+  const global = registry.global ?? registry.table_store;
+  try {
+    const state = global?.get?.();
+    if (state !== undefined) {
+      const next = {};
+      if (Array.isArray(state.archivedSessionIds) && state.archivedSessionIds.includes(sessionId)) {
+        next.archivedSessionIds = state.archivedSessionIds.filter((id) => id !== sessionId);
+        report.unarchived = true;
+      }
+      if (Array.isArray(state.pinnedSessionIds) && state.pinnedSessionIds.includes(sessionId)) {
+        next.pinnedSessionIds = state.pinnedSessionIds.filter((id) => id !== sessionId);
+      }
+      if (Object.keys(next).length > 0) {
+        await global.set({ ...state, ...next });
+        report.viaService = true;
+      }
     }
+  } catch (error) {
+    report.error = `workspace global sets: ${error?.message ?? String(error)}`;
+  }
+
+  // The accounting row: drop the id from whichever workspace lists it.
+  const table = registry.table ?? ctx.get('storageDomain')?.get?.('workspace')?.table?.('workspaces');
+  if (table === undefined || typeof table.update !== 'function') {
+    if (report.error === undefined) {
+      report.error = 'the workspace domain table is unreachable; the stored row was left in place';
+    }
+    return report;
+  }
+
+  try {
+    const ids = typeof table.keys === 'function' ? [...table.keys()] : [];
+    for (const workspaceId of ids) {
+      const record = table.get(workspaceId);
+      if (!record || !Array.isArray(record.sessionIds) || !record.sessionIds.includes(sessionId)) continue;
+      await table.update(workspaceId, (current) => ({
+        ...current,
+        sessionIds: current.sessionIds.filter((id) => id !== sessionId),
+        updatedAt: new Date().toISOString(),
+      }));
+      report.removedFrom.push(workspaceId);
+      report.viaService = true;
+    }
+  } catch (error) {
+    report.error = `workspace accounting row: ${error?.message ?? String(error)}`;
   }
 
   return report;
-}
-
-/** Remove the session's rows from `workspace.json` directly; the no-service fallback. */
-function forgetInStoreFile(sessionId) {
-  const outcome = { changed: false, removedFrom: [], unarchived: false };
-  const store = readJson(WORKSPACE_STORE);
-  if (!store || typeof store !== 'object') return outcome;
-
-  const global = store.global ?? {};
-  if (Array.isArray(global.archivedSessionIds) && global.archivedSessionIds.includes(sessionId)) {
-    global.archivedSessionIds = global.archivedSessionIds.filter((id) => id !== sessionId);
-    outcome.unarchived = true;
-    outcome.changed = true;
-  }
-  if (Array.isArray(global.pinnedSessionIds) && global.pinnedSessionIds.includes(sessionId)) {
-    global.pinnedSessionIds = global.pinnedSessionIds.filter((id) => id !== sessionId);
-    outcome.changed = true;
-  }
-  store.global = global;
-
-  for (const [workspaceId, row] of Object.entries(store.tables?.workspaces ?? {})) {
-    if (!Array.isArray(row?.sessionIds) || !row.sessionIds.includes(sessionId)) continue;
-    row.sessionIds = row.sessionIds.filter((id) => id !== sessionId);
-    outcome.removedFrom.push(workspaceId);
-    outcome.changed = true;
-  }
-
-  if (!outcome.changed) return outcome;
-  try {
-    const temporary = `${WORKSPACE_STORE}.tmp-session-delete`;
-    writeFileSync(temporary, `${JSON.stringify(store, null, 2)}\n`);
-    renameSync(temporary, WORKSPACE_STORE);
-  } catch (error) {
-    return { changed: false, removedFrom: [], unarchived: false, error: error?.message ?? String(error) };
-  }
-  return outcome;
 }
 
 // ── the operation ──────────────────────────────────────────────────────────────────────
